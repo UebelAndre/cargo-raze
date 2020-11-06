@@ -24,7 +24,7 @@ use anyhow::{anyhow, Result};
 use tempfile::TempDir;
 
 use crate::{
-  context::{CrateContext, WorkspaceContext},
+  context::{CrateContext, DependencyAlias, WorkspaceContext},
   metadata::{gather_binary_dep_info, BinaryDependencyInfo, CargoWorkspaceFiles, MetadataFetcher},
   settings::{GenMode, RazeSettings},
   util::PlatformDetails,
@@ -36,8 +36,13 @@ use subplanners::WorkspaceSubplanner;
 /** A ready-to-be-rendered build, containing renderable context for each crate. */
 #[derive(Debug)]
 pub struct PlannedBuild {
+  /// The overall context for this workspace
   pub workspace_context: WorkspaceContext,
+  /// The crates to build for
   pub crate_contexts: Vec<CrateContext>,
+  /// Any aliases that are defined at the root level
+  pub workspace_aliases: Vec<DependencyAlias>,
+  /// Any crates that provide binary blobs
   pub binary_crate_files: HashMap<String, CargoWorkspaceFiles>,
 }
 
@@ -128,15 +133,20 @@ impl<'fetcher> BuildPlannerImpl<'fetcher> {
 #[cfg(test)]
 mod tests {
   use crate::{
+    context::*,
     metadata::{CargoMetadataFetcher, Metadata, MetadataFetcher},
     settings::tests as settings_testing,
     testing::*,
   };
 
-  use indoc::indoc;
+  use cargo_platform::Cfg;
+
   use super::*;
   use cargo_metadata::PackageId;
   use httpmock::MockServer;
+  use indoc::indoc;
+  use literal::{set, SetLiteral};
+  use pretty_assertions::assert_eq;
   use semver::{Version, VersionReq};
 
   // A wrapper around a MetadataFetcher which drops the
@@ -153,6 +163,55 @@ mod tests {
       metadata.resolve = None;
       Ok(metadata)
     }
+  }
+
+  macro_rules! to_s {
+    ($lit: literal) => {
+      $lit.to_string()
+    };
+  }
+
+  /// Utility to grab specific crates out of a planned context
+  fn crate_ctx<'a>(
+    crates: &'a [CrateContext],
+    name: &str,
+    ver_req: Option<&str>,
+  ) -> &'a CrateContext {
+    let ver_req = ver_req
+      .map(|ver_req| VersionReq::parse(ver_req).unwrap())
+      .unwrap_or_else(|| VersionReq::any());
+
+    crates
+      .iter()
+      .find(|dep| dep.pkg_name == name && ver_req.matches(&dep.pkg_version))
+      .expect(&format!("{} not found", name))
+  }
+
+  /// Utility to run the most common planning in this test suite
+  fn do_planning(
+    toml: &'static str,
+    settings: Option<RazeSettings>,
+    platform: Option<PlatformDetails>,
+  ) -> PlannedBuild {
+    let (temp_dir, files) = make_workspace(toml, None);
+    let mut fetcher = WorkspaceCrateMetadataFetcher::default();
+
+    let settings = settings.unwrap_or_else(|| {
+      let mut settings = settings_testing::dummy_raze_settings();
+      settings.genmode = GenMode::Remote;
+      settings
+    });
+
+    let platform = platform.or_else(|| {
+      Some(PlatformDetails::new(
+        "some_target_triple".to_string(),
+        vec![],
+      ))
+    });
+
+    BuildPlannerImpl::new(&mut fetcher)
+      .plan_build(&settings, &temp_dir.into_path(), files, platform)
+      .unwrap()
   }
 
   #[test]
@@ -202,7 +261,6 @@ mod tests {
       )),
     );
 
-    println!("{:#?}", planned_build_res);
     assert!(planned_build_res.is_err());
   }
 
@@ -221,7 +279,6 @@ mod tests {
       )),
     );
 
-    println!("{:#?}", planned_build_res);
     assert!(planned_build_res.unwrap().crate_contexts.is_empty());
   }
 
@@ -367,98 +424,6 @@ mod tests {
 
     let mut planner = BuildPlannerImpl::new(&mut fetcher);
     // N.B. This will fail if we don't correctly ignore workspace crates.
-    let planned_build_res = planner.plan_build(
-      &settings,
-      &temp_dir.into_path(),
-      files,
-      Some(PlatformDetails::new(
-        "some_target_triple".to_owned(),
-        Vec::new(), /* attrs */
-      )),
-    );
-    assert!(planned_build_res.unwrap().crate_contexts.is_empty());
-  }
-
-  #[test]
-  fn test_plan_build_produces_aliased_dependencies() {
-    let toml_file = indoc! { r#"
-    [package]
-    name = "advanced_toml"
-    version = "0.1.0"
-
-    [lib]
-    path = "not_a_file.rs"
-
-    [dependencies]
-    actix-web = "2.0.0"
-    actix-rt = "1.0.0"
-    "# };
-    let (temp_dir, files) = make_workspace(toml_file, None);
-    let mut fetcher = WorkspaceCrateMetadataFetcher::default();
-    let mut settings = settings_testing::dummy_raze_settings();
-    settings.genmode = GenMode::Remote;
-
-    let mut planner = BuildPlannerImpl::new(&mut fetcher);
-    // N.B. This will fail if we don't correctly ignore workspace crates.
-    let planned_build_res = planner.plan_build(
-      &settings,
-      &temp_dir.into_path(),
-      files,
-      Some(PlatformDetails::new(
-        "some_target_triple".to_owned(),
-        Vec::new(), /* attrs */
-      )),
-    );
-
-    let crates_with_aliased_deps: Vec<CrateContext> = planned_build_res
-      .unwrap()
-      .crate_contexts
-      .into_iter()
-      .filter(|krate| krate.default_deps.aliased_dependencies.len() != 0)
-      .collect();
-
-    // Vec length shouldn't be 0
-    assert!(
-      crates_with_aliased_deps.len() != 0,
-      "Crates with aliased dependencies is 0"
-    );
-
-    // Find the actix-web crate
-    let actix_web_position = crates_with_aliased_deps
-      .iter()
-      .position(|krate| krate.pkg_name == "actix-http");
-    assert!(actix_web_position.is_some());
-
-    // Get crate context using computed position
-    let actix_http_context = crates_with_aliased_deps[actix_web_position.unwrap()].clone();
-
-    assert!(actix_http_context.default_deps.aliased_dependencies.len() == 1);
-    assert!(
-      actix_http_context.default_deps.aliased_dependencies[0].target
-        == "@raze_test__failure__0_1_8//:failure"
-    );
-    assert!(actix_http_context.default_deps.aliased_dependencies[0].alias == "fail_ure");
-  }
-
-  #[test]
-  fn test_plan_build_produces_proc_macro_dependencies() {
-    let toml_file = indoc! { r#"
-    [package]
-    name = "advanced_toml"
-    version = "0.1.0"
-
-    [lib]
-    path = "not_a_file.rs"
-
-    [dependencies]
-    serde = { version = "=1.0.112", features = ["derive"] }
-    "# };
-    let (temp_dir, files) = make_workspace(toml_file, None);
-    let mut fetcher = WorkspaceCrateMetadataFetcher::default();
-    let mut settings = settings_testing::dummy_raze_settings();
-    settings.genmode = GenMode::Remote;
-
-    let mut planner = BuildPlannerImpl::new(&mut fetcher);
     let planned_build = planner
       .plan_build(
         &settings,
@@ -470,12 +435,98 @@ mod tests {
         )),
       )
       .unwrap();
+    assert!(planned_build.crate_contexts.is_empty());
+    assert!(planned_build.workspace_aliases.is_empty());
+  }
 
-    let serde = planned_build
+  #[test]
+  fn test_plan_build_produces_aliased_dependencies() {
+    let toml = indoc! { r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    actix-web = "=2.0.0"
+    actix-rt = "=1.0.0"
+    "# };
+    let planned_build = do_planning(toml, None, None);
+
+    let crates_with_aliased_deps: Vec<CrateContext> = planned_build
       .crate_contexts
+      .into_iter()
+      .filter(|krate| krate.default_deps.aliased_dependencies.len() != 0)
+      .collect();
+
+    // Vec length shouldn't be 0
+    assert!(
+      crates_with_aliased_deps.len() != 0,
+      "Crates with aliased dependencies is 0"
+    );
+
+    let actix_http_context = crate_ctx(&crates_with_aliased_deps, "actix-http", None);
+
+    assert!(actix_http_context.default_deps.aliased_dependencies.len() == 1);
+    let failure_alias = actix_http_context
+      .default_deps
+      .aliased_dependencies
       .iter()
-      .find(|ctx| ctx.pkg_name == "serde")
-      .unwrap();
+      .find(|x| x.target == "@raze_test__failure__0_1_8//:failure")
+      .expect("Should contain an alias for actix-http");
+    assert_eq!(&failure_alias.alias, "fail_ure");
+  }
+
+  #[test]
+  fn test_plan_build_produces_root_aliases() {
+    let toml = indoc! { r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    bytes = "=0.6.0"
+    bytes_old = { version = "=0.3.0", package = "bytes" }
+    "# };
+    let planned_build = do_planning(toml, None, None);
+
+    // Only "root" deps should get an alias
+    assert_eq!(
+      planned_build.workspace_aliases,
+      vec! {
+        DependencyAlias {
+          target: "@raze_test__bytes__0_3_0//:bytes".to_string(),
+          alias: "bytes_old".to_string()
+        },
+        DependencyAlias {
+          target: "@raze_test__bytes__0_6_0//:bytes".to_string(),
+          alias: "bytes".to_string()
+        }
+      }
+    );
+  }
+
+  #[test]
+  fn test_plan_build_produces_proc_macro_dependencies() {
+    let toml = indoc! {r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    serde = { version = "=1.0.112", features = ["derive"] }
+    "# };
+    let planned_build = do_planning(toml, None, None);
+
+    let serde = crate_ctx(&planned_build.crate_contexts, "serde", None);
 
     let serde_derive_proc_macro_deps: Vec<_> = serde
       .default_deps
@@ -496,7 +547,7 @@ mod tests {
 
   #[test]
   fn test_plan_build_produces_build_proc_macro_dependencies() {
-    let toml_file = indoc! { r#"
+    let toml = indoc! { r#"
     [package]
     name = "advanced_toml"
     version = "0.1.0"
@@ -507,29 +558,9 @@ mod tests {
     [dependencies]
     markup5ever = "=0.10.0"
     "# };
-    let (temp_dir, files) = make_workspace(toml_file, None);
-    let mut fetcher = WorkspaceCrateMetadataFetcher::default();
-    let mut settings = settings_testing::dummy_raze_settings();
-    settings.genmode = GenMode::Remote;
+    let planned_build = do_planning(toml, None, None);
 
-    let mut planner = BuildPlannerImpl::new(&mut fetcher);
-    let planned_build = planner
-      .plan_build(
-        &settings,
-        &temp_dir.into_path(),
-        files,
-        Some(PlatformDetails::new(
-          "some_target_triple".to_owned(),
-          Vec::new(), /* attrs */
-        )),
-      )
-      .unwrap();
-
-    let markup = planned_build
-      .crate_contexts
-      .iter()
-      .find(|ctx| ctx.pkg_name == "markup5ever")
-      .unwrap();
+    let markup = crate_ctx(&planned_build.crate_contexts, "markup5ever", None);
 
     let markup_proc_macro_deps: Vec<_> = markup
       .default_deps
@@ -550,7 +581,7 @@ mod tests {
 
   #[test]
   fn test_subplan_produces_crate_root_with_forward_slash() {
-    let toml_file = indoc! { r#"
+    let toml = indoc! { r#"
     [package]
     name = "advanced_toml"
     version = "0.1.0"
@@ -561,20 +592,7 @@ mod tests {
     [dependencies]
     markup5ever = "=0.10.0"
     "# };
-    let (temp_dir, files) = make_workspace(toml_file, None);
-    let mut fetcher = WorkspaceCrateMetadataFetcher::default();
-    let mut planner = BuildPlannerImpl::new(&mut fetcher);
-    let planned_build = planner
-      .plan_build(
-        &settings_testing::dummy_raze_settings(),
-        &temp_dir.into_path(),
-        files,
-        Some(PlatformDetails::new(
-          "some_target_triple".to_owned(),
-          Vec::new(), /* attrs */
-        )),
-      )
-      .unwrap();
+    let planned_build = do_planning(toml, None, None);
 
     assert_eq!(
       planned_build.crate_contexts[0].targets[0].path,
@@ -613,15 +631,12 @@ mod tests {
       )
       .unwrap();
 
-    let version = Version::parse("3.3.3").unwrap();
-
     // We expect to have a crate context for the binary dependency
-    let context = planned_build
-      .crate_contexts
-      .iter()
-      .inspect(|x| println!("{}{}", x.pkg_name, x.pkg_version))
-      .find(|ctx| ctx.pkg_name == "some-remote-crate" && ctx.pkg_version == version)
-      .unwrap();
+    let context = crate_ctx(
+      &planned_build.crate_contexts,
+      "some-remote-crate",
+      Some("=3.3.3"),
+    );
 
     // It's also expected to have a checksum
     assert!(context.sha256.is_some());
@@ -658,6 +673,8 @@ mod tests {
         )),
       )
       .unwrap();
+
+    assert!(planned_build.workspace_aliases.is_empty());
 
     let wasm_version = Version::parse("0.2.68").unwrap();
 
@@ -768,82 +785,377 @@ mod tests {
 
     let mut planner = BuildPlannerImpl::new(&mut fetcher);
     // N.B. This will fail if we don't correctly ignore workspace crates.
-    let planned_build_res = planner.plan_build(
-      &settings,
-      &temp_dir.into_path(),
-      files,
-      Some(PlatformDetails::new(
-        "some_target_triple".to_owned(),
-        Vec::new(), /* attrs */
-      )),
-    );
+    let planned_build = planner
+      .plan_build(
+        &settings,
+        &temp_dir.into_path(),
+        files,
+        Some(PlatformDetails::new(
+          "some_target_triple".to_owned(),
+          Vec::new(), /* attrs */
+        )),
+      )
+      .unwrap();
 
-    let crates: Vec<CrateContext> = planned_build_res
-      .unwrap()
-      .crate_contexts
-      .into_iter()
-      .collect();
+    let crates: Vec<CrateContext> = planned_build.crate_contexts;
+    let dep = |name: &str, ver_req: Option<&str>| &crate_ctx(&crates, name, ver_req).raze_settings;
 
-    let dep = |name: &str, ver_req: &str| {
-      let ver_req = VersionReq::parse(ver_req).unwrap();
-      &crates
-        .iter()
-        .find(|dep| dep.pkg_name == name && ver_req.matches(&dep.pkg_version))
-        .expect(&format!("{} not found", name))
-        .raze_settings
+    let assert_dep_not_match = |name: &str, ver_req: Option<&str>| {
+      // Didnt match anything so should not have any settings
+      let test_dep = dep(name, ver_req);
+      assert!(test_dep.additional_flags.is_empty());
+      assert!(test_dep.additional_deps.is_empty());
+      assert!(test_dep.gen_buildrs.is_none());
+      assert!(test_dep.extra_aliased_targets.is_empty());
+      assert!(test_dep.patches.is_empty());
+      assert!(test_dep.patch_cmds.is_empty());
+      assert!(test_dep.patch_tool.is_none());
+      assert!(test_dep.patch_cmds_win.is_empty());
+      assert!(test_dep.skipped_deps.is_empty());
+      assert!(test_dep.additional_build_file.is_none());
+      assert!(test_dep.data_attr.is_none());
     };
 
-    let assert_dep_not_match = |name: &str, ver_req: &str| {
-        // Didnt match anything so should not have any settings
-        let test_dep = dep(name, ver_req);
-        assert!(test_dep.additional_flags.is_empty());
-        assert!(test_dep.additional_deps.is_empty());
-        assert!(test_dep.gen_buildrs.is_none());
-        assert!(test_dep.extra_aliased_targets.is_empty());
-        assert!(test_dep.patches.is_empty());
-        assert!(test_dep.patch_cmds.is_empty());
-        assert!(test_dep.patch_tool.is_none());
-        assert!(test_dep.patch_cmds_win.is_empty());
-        assert!(test_dep.skipped_deps.is_empty());
-        assert!(test_dep.additional_build_file.is_none());
-        assert!(test_dep.data_attr.is_none());
-    };
+    assert_dep_not_match("anyhow", None);
+    assert_dep_not_match("lexical-core", Some("^0.7"));
 
-    assert_dep_not_match("anyhow", "*");
-    assert_dep_not_match("lexical-core", "^0.7");
-
-    assert_eq!{
-      dep("openssl-sys", "0.9.24").additional_deps,
+    assert_eq! {
+      dep("openssl-sys", Some("0.9.24")).additional_deps,
       vec![
         "@//third_party/openssl:crypto",
         "@//third_party/openssl:ssl"
       ]
     };
-    assert_eq!{
-      dep("openssl-sys", "0.9.24").additional_flags,
+    assert_eq! {
+      dep("openssl-sys", Some("0.9.24")).additional_flags,
       vec!["--cfg=ossl102", "--cfg=version=102"]
     };
 
-    assert_eq!{
-      dep("openssl", "0.10.*").additional_flags,
+    assert_eq! {
+      dep("openssl", Some("0.10.*")).additional_flags,
       vec!["--cfg=ossl102", "--cfg=version=102", "--cfg=ossl10x"],
     };
 
-    assert!(dep("clang-sys", "0.21").gen_buildrs.unwrap_or_default());
+    assert!(dep("clang-sys", Some("0.21"))
+      .gen_buildrs
+      .unwrap_or_default());
 
-    assert_eq!{
-      dep("unicase", "2.1").additional_flags,
+    assert_eq! {
+      dep("unicase", Some("2.1")).additional_flags,
       vec! [
         "--cfg=__unicase__iter_cmp",
         "--cfg=__unicase__defauler_hasher",
       ]
     };
 
-    assert!(dep("bindgen", "*").gen_buildrs.unwrap_or_default());
-    assert_eq!{
-        dep("bindgen", "*").extra_aliased_targets,
+    assert!(dep("bindgen", None).gen_buildrs.unwrap_or_default());
+    assert_eq! {
+        dep("bindgen", None).extra_aliased_targets,
         vec!["cargo_bin_bindgen"]
     };
+  }
+
+  #[test]
+  fn test_alias_bug_270() {
+    let toml = indoc! { r#"
+    [package]
+    name = "alias_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    libsecp256k1 = "0.3.5"
+    "#};
+
+    let planned_build = do_planning(toml, None, None);
+
+    let dep = crate_ctx(&planned_build.crate_contexts, "libsecp256k1", None);
+    assert!(dep.default_deps.aliased_dependencies.is_empty());
+  }
+
+  #[test]
+  fn test_alias_bug_269() {
+    let toml = indoc! { r#"
+    [package]
+    name = "alias_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    async-global-executor = "=1.4.2"
+    "#};
+
+    let planned_build = do_planning(toml, None, None);
+
+    let context = crate_ctx(&planned_build.crate_contexts, "async-global-executor", None);
+    let aliases = &context.default_deps.aliased_dependencies;
+
+    assert!(aliases.is_empty());
+  }
+
+  #[test]
+  fn test_alias_bug_269_tokio02() {
+    let toml = indoc! { r#"
+    [package]
+    name = "alias_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    async-global-executor = { version = "=1.4.2", features = ["tokio02"] }
+    "#};
+
+    let planned_build = do_planning(toml, None, None);
+
+    let context = crate_ctx(&planned_build.crate_contexts, "async-global-executor", None);
+    let aliases = &context.default_deps.aliased_dependencies;
+
+    assert_eq!(
+      aliases,
+      &set! { DependencyAlias {
+          alias: "tokio02_crate".to_string(),
+          target: "@raze_test__tokio__0_2_22//:tokio".to_string(),
+      }}
+    );
+  }
+
+  #[test]
+  fn test_alias_bug_269_tokio_mixed() {
+    let toml = indoc! { r#"
+    [package]
+    name = "alias_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    async-global-executor = { version = "=1.4.2", features = ["tokio02", "tokio03"] }
+    "#};
+
+    let planned_build = do_planning(toml, None, None);
+
+    let context = crate_ctx(&planned_build.crate_contexts, "async-global-executor", None);
+    let aliases = &context.default_deps.aliased_dependencies;
+
+    assert_eq!(
+      aliases,
+      &set! {
+        DependencyAlias {
+          alias: "tokio02_crate".to_string(),
+          target: "@raze_test__tokio__0_2_22//:tokio".to_string(),
+        },
+        DependencyAlias {
+          alias: "tokio03_crate".to_string(),
+          target: "@raze_test__tokio__0_3_3//:tokio".to_string(),
+        }
+      }
+    );
+  }
+
+  #[test]
+  fn test_plan_build_targetting() {
+    let toml = indoc! { r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    socket2 = "=0.3.15"
+    "# };
+
+    let planned_build = do_planning(toml, None, None);
+    let context = crate_ctx(&planned_build.crate_contexts, "socket2", None);
+
+    assert_eq!(
+      context.targeted_deps,
+      vec! {
+        CrateTargetedDepContext {
+          target: to_s!(r#"cfg(any(unix, target_os = "redox"))"#),
+          deps: CrateDependencyContext {
+            dependencies: vec!{
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__cfg_if__0_1_10//:cfg_if"),
+                name: to_s!("cfg-if"),
+                version: Version::parse("0.1.10").unwrap(),
+                is_proc_macro: false,
+              },
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__libc__0_2_80//:libc"),
+                name: to_s!("libc"),
+                version: Version::parse("0.2.80").unwrap(),
+                is_proc_macro: false,
+              },
+            },
+            ..Default::default()
+          },
+          platform_targets: vec![
+            to_s!("i686-apple-darwin"),
+            to_s!("i686-unknown-linux-gnu"),
+            to_s!("x86_64-apple-darwin"),
+            to_s!("x86_64-unknown-linux-gnu"),
+            to_s!("aarch64-apple-ios"),
+            to_s!("aarch64-linux-android"),
+            to_s!("aarch64-unknown-linux-gnu"),
+            to_s!("arm-unknown-linux-gnueabi"),
+            to_s!("i686-linux-android"),
+            to_s!("i686-unknown-freebsd"),
+            to_s!("powerpc-unknown-linux-gnu"),
+            to_s!("s390x-unknown-linux-gnu"),
+            to_s!("x86_64-apple-ios"),
+            to_s!("x86_64-linux-android"),
+            to_s!("x86_64-unknown-freebsd"),
+          ],
+        },
+        // Redox is not supported and should have been filtered
+        CrateTargetedDepContext {
+          target: to_s!("cfg(windows)"),
+          deps: CrateDependencyContext {
+          dependencies: vec!{
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__winapi__0_3_9//:winapi"),
+                name: to_s!("winapi"),
+                version: Version::parse("0.3.9").unwrap(),
+                is_proc_macro: false,
+              },
+            },
+            ..Default::default()
+          },
+          platform_targets: vec![
+            to_s!("i686-pc-windows-msvc"),
+            to_s!("x86_64-pc-windows-msvc"),
+          ],
+        },
+      }
+    );
+  }
+
+  #[test]
+  fn test_plan_build_legacy_targetting() {
+    let toml = indoc! { r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    socket2 = "=0.3.15"
+    "# };
+
+    let platform = PlatformDetails::new(
+      to_s!("i686-pc-windows-msvc"),
+      vec![Cfg::Name(to_s!("windows"))],
+    );
+
+    let mut settings = settings_testing::dummy_raze_settings();
+    settings.target = Some(to_s!("i686-pc-windows-msvc"));
+    let planned_build = do_planning(toml, Some(settings), Some(platform));
+    let context = crate_ctx(&planned_build.crate_contexts, "socket2", None);
+
+    assert_eq!(
+      context.targeted_deps,
+      vec! {
+        // Legacy filtering should be filtering not windows
+        CrateTargetedDepContext {
+          target: to_s!("cfg(windows)"),
+          deps: CrateDependencyContext {
+          dependencies: vec!{
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__winapi__0_3_9//:winapi"),
+                name: to_s!("winapi"),
+                version: Version::parse("0.3.9").unwrap(),
+                is_proc_macro: false,
+              },
+            },
+            ..Default::default()
+          },
+          platform_targets: vec![
+            to_s!("i686-pc-windows-msvc"),
+            to_s!("x86_64-pc-windows-msvc"),
+          ],
+        },
+      }
+    );
+
+  }
+
+  #[test]
+  fn test_plan_build_specified_targetting() {
+    let toml = indoc! { r#"
+    [package]
+    name = "advanced_toml"
+    version = "0.1.0"
+
+    [lib]
+    path = "not_a_file.rs"
+
+    [dependencies]
+    socket2 = "=0.3.15"
+    "# };
+
+    let mut settings = settings_testing::dummy_raze_settings();
+    settings.targets = Some(set! {
+        to_s!("i686-apple-darwin"),
+        to_s!("i686-unknown-linux-gnu"),
+        to_s!("x86_64-apple-darwin"),
+        to_s!("x86_64-unknown-linux-gnu"),
+        to_s!("i686-linux-android"),
+        to_s!("i686-unknown-freebsd"),
+        to_s!("x86_64-apple-ios"),
+        to_s!("x86_64-linux-android"),
+        to_s!("x86_64-unknown-freebsd"),
+    });
+    let planned_build = do_planning(toml, Some(settings), None);
+    let context = crate_ctx(&planned_build.crate_contexts, "socket2", None);
+
+    assert_eq!(
+      context.targeted_deps,
+      vec! {
+        CrateTargetedDepContext {
+          target: to_s!(r#"cfg(any(unix, target_os = "redox"))"#),
+          deps: CrateDependencyContext {
+            dependencies: vec!{
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__cfg_if__0_1_10//:cfg_if"),
+                name: to_s!("cfg-if"),
+                version: Version::parse("0.1.10").unwrap(),
+                is_proc_macro: false,
+              },
+              BuildableDependency {
+                buildable_target: to_s!("@raze_test__libc__0_2_80//:libc"),
+                name: to_s!("libc"),
+                version: Version::parse("0.2.80").unwrap(),
+                is_proc_macro: false,
+              },
+            },
+            ..Default::default()
+          },
+          // Should only be for the platforms we stated
+          platform_targets: vec![
+            to_s!("i686-apple-darwin"),
+            to_s!("i686-unknown-linux-gnu"),
+            to_s!("x86_64-apple-darwin"),
+            to_s!("x86_64-unknown-linux-gnu"),
+            to_s!("i686-linux-android"),
+            to_s!("i686-unknown-freebsd"),
+            to_s!("x86_64-apple-ios"),
+            to_s!("x86_64-linux-android"),
+            to_s!("x86_64-unknown-freebsd"),
+          ],
+        }
+      }
+    );
   }
 
   // TODO(acmcarther): Add tests:

@@ -17,7 +17,7 @@ use anyhow::Result;
 use tera::{self, Context, Tera};
 
 use crate::{
-  context::{CrateContext, WorkspaceContext},
+  context::{CrateContext, DependencyAlias, WorkspaceContext},
   error::RazeError,
   planning::PlannedBuild,
   rendering::{BuildRenderer, FileOutputs, RenderDetails},
@@ -100,11 +100,11 @@ impl BazelRenderer {
   pub fn render_aliases(
     &self,
     workspace_context: &WorkspaceContext,
-    all_packages: &[CrateContext],
+    workspace_aliases: &[DependencyAlias],
   ) -> Result<String, tera::Error> {
     let mut context = Context::new();
     context.insert("workspace", &workspace_context);
-    context.insert("crates", &all_packages);
+    context.insert("aliases", &workspace_aliases);
     self
       .internal_renderer
       .render("templates/workspace.BUILD.template", &context)
@@ -121,19 +121,6 @@ impl BazelRenderer {
     self
       .internal_renderer
       .render("templates/crate.BUILD.template", &context)
-  }
-
-  pub fn render_remote_aliases(
-    &self,
-    workspace_context: &WorkspaceContext,
-    all_packages: &[CrateContext],
-  ) -> Result<String, tera::Error> {
-    let mut context = Context::new();
-    context.insert("workspace", &workspace_context);
-    context.insert("crates", &all_packages);
-    self
-      .internal_renderer
-      .render("templates/workspace.BUILD.template", &context)
   }
 
   pub fn render_bzl_fetch(
@@ -198,6 +185,7 @@ impl BuildRenderer for BazelRenderer {
     let &PlannedBuild {
       ref workspace_context,
       ref crate_contexts,
+      ref workspace_aliases,
       ..
     } = planned_build;
     let mut file_outputs = Vec::new();
@@ -222,7 +210,7 @@ impl BuildRenderer for BazelRenderer {
 
     let build_file_path = path_prefix.as_path().join(buildfile_suffix);
     let rendered_alias_build_file = self
-      .render_aliases(&workspace_context, &crate_contexts)
+      .render_aliases(&workspace_context, &workspace_aliases)
       .map_err(|e| RazeError::Rendering {
         crate_name_opt: None,
         message: unwind_tera_error!(e),
@@ -248,6 +236,7 @@ impl BuildRenderer for BazelRenderer {
     let &PlannedBuild {
       ref workspace_context,
       ref crate_contexts,
+      ref workspace_aliases,
       ..
     } = planned_build;
     let mut file_outputs: Vec<FileOutputs> = Vec::new();
@@ -277,7 +266,7 @@ impl BuildRenderer for BazelRenderer {
 
     let alias_file_path = path_prefix.as_path().join(buildfile_suffix);
     let rendered_alias_build_file = self
-      .render_remote_aliases(&workspace_context, &crate_contexts)
+      .render_aliases(&workspace_context, &workspace_aliases)
       .map_err(|e| RazeError::Rendering {
         crate_name_opt: None,
         message: unwind_tera_error!(e),
@@ -344,13 +333,26 @@ mod tests {
     }
   }
 
-  fn dummy_planned_build(crate_contexts: Vec<CrateContext>) -> PlannedBuild {
+  fn dummy_aliases() -> Vec<DependencyAlias> {
+    vec!{
+      DependencyAlias {
+        alias: "renamed_some_library".to_string(),
+        target: "@raze__test_library__1_1_1//:test_library".to_string(),
+      }
+    }
+  }
+
+  fn dummy_planned_build(
+    workspace_aliases: Vec<DependencyAlias>,
+    crate_contexts: Vec<CrateContext>,
+  ) -> PlannedBuild {
     PlannedBuild {
       workspace_context: WorkspaceContext {
         workspace_path: "//workspace/prefix".to_owned(),
         gen_workspace_prefix: "".to_owned(),
         output_buildfile_suffix: "BUILD".to_owned(),
       },
+      workspace_aliases,
       crate_contexts,
       binary_crate_files: HashMap::new(),
     }
@@ -361,18 +363,11 @@ mod tests {
       pkg_name: "test-binary".to_owned(),
       pkg_version: Version::parse("1.1.1").unwrap(),
       edition: "2015".to_owned(),
-      features: vec!["feature1".to_owned(), "feature2".to_owned()].to_owned(),
+      features: vec!["feature1".to_owned(), "feature2".to_owned()],
       expected_build_path: format!("vendor/test-binary-1.1.1/{}", buildfile_suffix),
       license: LicenseData::default(),
       raze_settings: CrateSettings::default(),
-      default_deps: CrateDependencyContext {
-        dependencies: Vec::new(),
-        proc_macro_dependencies: Vec::new(),
-        build_dependencies: Vec::new(),
-        build_proc_macro_dependencies: Vec::new(),
-        dev_dependencies: Vec::new(),
-        aliased_dependencies: Vec::new(),
-      },
+      default_deps: CrateDependencyContext::default(),
       targeted_deps: Vec::new(),
       is_root_dependency: true,
       workspace_path_to_crate: "@raze__test_binary__1_1_1//".to_owned(),
@@ -403,16 +398,9 @@ mod tests {
       edition: "2015".to_owned(),
       license: LicenseData::default(),
       raze_settings: CrateSettings::default(),
-      features: vec!["feature1".to_owned(), "feature2".to_owned()].to_owned(),
+      features: vec!["feature1".to_owned(), "feature2".to_owned()],
       expected_build_path: format!("vendor/test-library-1.1.1/{}", buildfile_suffix),
-      default_deps: CrateDependencyContext {
-        dependencies: Vec::new(),
-        proc_macro_dependencies: Vec::new(),
-        build_dependencies: Vec::new(),
-        build_proc_macro_dependencies: Vec::new(),
-        dev_dependencies: Vec::new(),
-        aliased_dependencies: Vec::new(),
-      },
+      default_deps: CrateDependencyContext::default(),
       targeted_deps: Vec::new(),
       is_root_dependency: true,
       workspace_path_to_crate: "@raze__test_library__1_1_1//".to_owned(),
@@ -455,7 +443,7 @@ mod tests {
     BazelRenderer::new()
       .render_planned_build(
         &dummy_render_details(buildfile_suffix),
-        &dummy_planned_build(crate_contexts),
+        &dummy_planned_build(dummy_aliases(), crate_contexts),
       )
       .unwrap()
   }
@@ -518,7 +506,7 @@ mod tests {
   }
 
   #[test]
-  fn root_crates_get_build_aliases() {
+  fn test_workspace_alias_emittence() {
     let file_outputs = render_crates_for_test(vec![dummy_library_crate()]);
     let root_build_contents =
       extract_contents_matching_path(&file_outputs, "./some_render_prefix/BUILD");
@@ -535,19 +523,27 @@ mod tests {
   }
 
   #[test]
-  fn non_root_crates_dont_get_build_aliases() {
-    let mut non_root_crate = dummy_library_crate();
-    non_root_crate.is_root_dependency = false;
+  fn workspace_root_get_direct_renames() {
+    let root_crate = dummy_library_crate();
+    let rename = DependencyAlias {
+      alias: "renamed_some_library".to_string(),
+      target: "@raze__test_library__1_1_1//:test_library".to_string(),
+    };
 
-    let file_outputs = render_crates_for_test(vec![non_root_crate]);
+    let file_outputs = BazelRenderer::new()
+      .render_planned_build(
+        &dummy_render_details("BUILD"),
+        &dummy_planned_build(vec![rename], vec![root_crate]),
+      )
+      .unwrap();
+
     let root_build_contents =
       extract_contents_matching_path(&file_outputs, "./some_render_prefix/BUILD");
 
     expect(
-      !root_build_contents.contains("alias"),
+      root_build_contents.contains("renamed_some_library"),
       format!(
-        "expected root build contents not to contain an alias for test-library crate, but it just \
-         contained [{}]",
+        "The bazel alias contains the original name and not the rename contained [{}]",
         root_build_contents
       ),
     )
@@ -594,13 +590,16 @@ mod tests {
   fn additional_build_file_missing_file_failure() {
     let render_result = BazelRenderer::new().render_planned_build(
       &dummy_render_details("BUILD"),
-      &dummy_planned_build(vec![CrateContext {
-        raze_settings: CrateSettings {
-          additional_build_file: Some("non-existent-file".into()),
-          ..Default::default()
-        },
-        ..dummy_library_crate()
-      }]),
+      &dummy_planned_build(
+        dummy_aliases(),
+        vec![CrateContext {
+          raze_settings: CrateSettings {
+            additional_build_file: Some("non-existent-file".into()),
+            ..Default::default()
+          },
+          ..dummy_library_crate()
+        }],
+      ),
     );
 
     assert_that!(render_result, err());
@@ -634,7 +633,7 @@ mod tests {
   #[test]
   fn binary_dependency_lockfiles() {
     let render_details = dummy_render_details("BUILD.bazel");
-    let mut planned_build = dummy_planned_build(Vec::new());
+    let mut planned_build = dummy_planned_build(dummy_aliases(), vec![]);
 
     let tempdir = tempfile::TempDir::new().unwrap();
     std::fs::write(tempdir.as_ref().join("Cargo.toml"), "Hello").unwrap();

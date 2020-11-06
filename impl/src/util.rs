@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::{
+  collections::HashSet,
   env, fmt,
   iter::Iterator,
   path::PathBuf,
@@ -20,13 +21,13 @@ use std::{
   str::{self, FromStr},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 use cargo_platform::Cfg;
 
 use cfg_expr::{targets::get_builtin_target_by_triple, Expression, Predicate};
 
-static SUPPORTED_PLATFORM_TRIPLES: &'static [&'static str] = &[
+static SUPPORTED_PLATFORM_TRIPLES: &[&str] = &[
   // SUPPORTED_T1_PLATFORM_TRIPLES
   "i686-apple-darwin",
   "i686-pc-windows-msvc",
@@ -122,85 +123,46 @@ pub fn is_bazel_supported_platform(target: &str) -> (bool, bool) {
  * Note, the Bazel triples must be defined in:
  * https://github.com/bazelbuild/rules_rust/blob/master/rust/platform/platform.bzl
  */
-pub fn get_matching_bazel_triples(target: &str) -> Result<Vec<String>> {
-  let target_exp = match target.starts_with("cfg(") {
-    true => target.to_owned(),
-    false => format!("cfg(target = \"{}\")", target),
-  };
+pub fn get_matching_bazel_triples<'a>(
+  target: &str,
+  whitelist: &'a Option<HashSet<String>>,
+) -> Result<impl Iterator<Item = &'static str> + 'a> {
+  let expression = match target.starts_with("cfg(") {
+    true => Expression::parse(target),
+    false => Expression::parse(&format!("cfg(target = \"{}\")", target)),
+  }?;
 
-  let expression = Expression::parse(&target_exp)?;
-  let triples: Vec<String> = SUPPORTED_PLATFORM_TRIPLES
+  let triples = SUPPORTED_PLATFORM_TRIPLES
     .iter()
-    .filter_map(|triple| {
+    .filter_map(move |triple| {
       let target_info = get_builtin_target_by_triple(triple).unwrap();
-      match expression.eval(|pred| {
-        match pred {
-          Predicate::Target(tp) => tp.matches(target_info),
-          Predicate::KeyValue {
-            key,
-            val,
-          } => (*key == "target") && (*val == target_info.triple),
-          // For now there is no other kind of matching
-          _ => false,
-        }
-      }) {
-        true => Some(String::from((*target_info).triple)),
-        false => None,
+      let triple = target_info.triple;
+      let res = expression.eval(|pred| match pred {
+        Predicate::Target(tp) => tp.matches(target_info),
+        Predicate::KeyValue { key, val } => *key == "target" && *val == triple,
+        // For now there is no other kind of matching
+        _ => false,
+      });
+
+      match res {
+        true => Some(triple),
+        false => None
       }
     })
-    .collect();
+    .filter(move |x| {
+      whitelist
+        .as_ref()
+        .map(|targets| targets.contains(*x))
+        .unwrap_or(true)
+    });
 
   Ok(triples)
-}
-
-/** Produces a list of triples based on a provided whitelist */
-pub fn filter_bazel_triples(triples: &mut Vec<String>, triples_whitelist: &Vec<String>) {
-  // Early-out if the filter list is empty
-  if triples_whitelist.len() == 0 {
-    return;
-  }
-
-  // Prune everything that's not found in the whitelist
-  triples.retain(|triple| triples_whitelist.iter().any(|i| i == triple));
-
-  triples.sort();
-}
-
-/** Returns a list of Bazel targets for use in `select` statements based on a
- * given list of triples.
- */
-pub fn generate_bazel_conditions(triples: &Vec<String>) -> Result<Vec<String>> {
-  // Sanity check ensuring all strings represent real triples
-  for triple in triples.iter() {
-    match get_builtin_target_by_triple(triple) {
-      None => {
-        return Err(anyhow!("Not a triple: '{}'", triple));
-      },
-      _ => {},
-    }
-  }
-
-  let mut bazel_triples: Vec<String> = triples
-    .iter()
-    .map(|triple| format!("@io_bazel_rules_rust//rust/platform:{}", triple))
-    .collect();
-
-  bazel_triples.sort();
-
-  Ok(bazel_triples)
 }
 
 /** Returns whether or not the given path is a Bazel workspace root */
 pub fn is_bazel_workspace_root(dir: &PathBuf) -> bool {
   let workspace_files = [dir.join("WORKSPACE.bazel"), dir.join("WORKSPACE")];
-
-  for workspace in workspace_files.iter() {
-    if workspace.exists() {
-      return true;
-    }
-  }
-
-  return false;
+  workspace_files.iter().any(|x| x.exists())
 }
 
 /** Returns a path to a Bazel workspace root based on the current working
@@ -429,38 +391,4 @@ mod tests {
     }
   }
 
-  #[test]
-  fn generate_condition_strings() {
-    assert_eq!(
-      generate_bazel_conditions(&vec![
-        "aarch64-unknown-linux-gnu".to_string(),
-        "aarch64-apple-ios".to_string(),
-      ])
-      .unwrap(),
-      vec![
-        "@io_bazel_rules_rust//rust/platform:aarch64-apple-ios",
-        "@io_bazel_rules_rust//rust/platform:aarch64-unknown-linux-gnu",
-      ]
-    );
-
-    assert_eq!(
-      generate_bazel_conditions(&vec!["aarch64-unknown-linux-gnu".to_string()]).unwrap(),
-      vec!["@io_bazel_rules_rust//rust/platform:aarch64-unknown-linux-gnu"]
-    );
-
-    assert!(generate_bazel_conditions(&vec![
-      "aarch64-unknown-linux-gnu".to_string(),
-      "unknown-unknown-unknown".to_string(),
-    ])
-    .is_err());
-
-    assert!(generate_bazel_conditions(&vec!["unknown-unknown-unknown".to_string()]).is_err());
-
-    assert!(generate_bazel_conditions(&vec![
-      "foo".to_string(),
-      "bar".to_string(),
-      "baz".to_string()
-    ])
-    .is_err());
-  }
 }
