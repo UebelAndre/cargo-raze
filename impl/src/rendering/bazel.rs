@@ -79,9 +79,7 @@ impl BazelRenderer {
       ])
       .unwrap();
 
-    Self {
-      internal_renderer,
-    }
+    Self { internal_renderer }
   }
 
   pub fn render_crate(
@@ -153,7 +151,7 @@ fn include_additional_build_file(
         "{}\n# Additional content from {}\n{}",
         existing_contents, file_path, additional_content
       ))
-    },
+    }
 
     None => Ok(existing_contents),
   }
@@ -378,9 +376,7 @@ mod tests {
         edition: "2015".to_owned(),
       }],
       build_script_target: None,
-      source_details: SourceDetails {
-        git_data: None,
-      },
+      source_details: SourceDetails { git_data: None },
       sha256: None,
       registry_url: "https://crates.io/api/v1/crates/test-binary/1.1.1/download".to_string(),
       lib_target_name: None,
@@ -411,9 +407,7 @@ mod tests {
         edition: "2015".to_owned(),
       }],
       build_script_target: None,
-      source_details: SourceDetails {
-        git_data: None,
-      },
+      source_details: SourceDetails { git_data: None },
       sha256: None,
       registry_url: "https://crates.io/api/v1/crates/test-binary/1.1.1/download".to_string(),
       lib_target_name: Some("test_library".to_owned()),

@@ -350,7 +350,6 @@ fn validate_settings(settings: &mut RazeSettings) -> Result<(), RazeError> {
         )
         .to_owned(),
       }
-      .into(),
     );
   }
 

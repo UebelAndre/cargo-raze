@@ -145,7 +145,6 @@ fn main() -> Result<()> {
           fs::create_dir_all(
             render_details
               .path_prefix
-              .clone()
               .as_path()
               .join("lockfiles"),
           )?;
@@ -153,16 +152,12 @@ fn main() -> Result<()> {
       }
 
       bazel_renderer.render_remote_planned_build(&render_details, &planned_build)?
-    }, /* exhaustive, we control the definition */
+    } /* exhaustive, we control the definition */
     // There are no file outputs to produce if `genmode` is Unspecified
     GenMode::Unspecified => Vec::new(),
   };
 
-  for FileOutputs {
-    path,
-    contents,
-  } in bazel_file_outputs
-  {
+  for FileOutputs { path, contents } in bazel_file_outputs {
     if dry_run {
       println!("{}:\n{}", path.display(), contents);
     } else {
@@ -194,7 +189,7 @@ fn calculate_workspace_root(
     Some(output) => {
       prefix_path.clear();
       prefix_path.push(output);
-    },
+    }
     None => {
       if new_behavior {
         if let Some(workspace_root) = find_bazel_workspace_root() {
@@ -207,7 +202,7 @@ fn calculate_workspace_root(
           );
         }
       }
-    },
+    }
   }
 
   Ok(prefix_path)
