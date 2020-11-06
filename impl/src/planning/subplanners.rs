@@ -89,11 +89,11 @@ impl<'planner> WorkspaceSubplanner<'planner> {
           checks::check_resolve_matches_packages(&bin_dep.metadata)?;
           packages.extend(bin_dep.metadata.packages.iter());
         }
-      },
+      }
       GenMode::Vendored => {
         checks::check_all_vendored(self.crate_catalog.entries(), &self.settings.workspace_path)?;
-      },
-      _ => { /* No checks to perform */ },
+      }
+      _ => { /* No checks to perform */ }
     }
 
     checks::warn_unused_settings(&self.settings.crates, &packages);
@@ -254,7 +254,7 @@ impl<'planner> WorkspaceSubplanner<'planner> {
       }
     }
 
-    // Additionally, the binary dependencies need to have their checksums added as well in 
+    // Additionally, the binary dependencies need to have their checksums added as well in
     // Remote GenMode configurations. Vendored GenMode relies on the behavior of `cargo vendor`
     // and doesn't perform any special logic to fetch binary dependency crates.
     if self.settings.genmode == GenMode::Remote {
@@ -666,14 +666,16 @@ impl<'planner> CrateSubplanner<'planner> {
         .components()
         .map(|c| c.as_os_str().to_str())
         .try_fold("".to_owned(), |res, v| Some(format!("{}/{}", res, v?)))
-        .ok_or(io::Error::new(
-          io::ErrorKind::InvalidData,
-          format!(
-            "{:?} contains non UTF-8 characters and is not a legal path in Bazel",
-            &target.src_path
-          ),
-        ))?
-        .trim_start_matches("/")
+        .ok_or_else(|| {
+          io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+              "{:?} contains non UTF-8 characters and is not a legal path in Bazel",
+              &target.src_path
+            ),
+          )
+        })?
+        .trim_start_matches('/')
         .to_owned();
 
       for kind in &target.kind {

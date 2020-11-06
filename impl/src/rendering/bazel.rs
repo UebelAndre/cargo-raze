@@ -79,9 +79,7 @@ impl BazelRenderer {
       ])
       .unwrap();
 
-    Self {
-      internal_renderer,
-    }
+    Self { internal_renderer }
   }
 
   pub fn render_crate(
@@ -153,7 +151,7 @@ fn include_additional_build_file(
         "{}\n# Additional content from {}\n{}",
         existing_contents, file_path, additional_content
       ))
-    },
+    }
 
     None => Ok(existing_contents),
   }

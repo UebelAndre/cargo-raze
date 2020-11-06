@@ -88,7 +88,7 @@ pub fn is_bazel_supported_platform(target: &str) -> (bool, bool) {
     // If the target expression cannot be parsed it is not considered a Bazel platform
     Err(_) => {
       return (false, false);
-    },
+    }
   };
 
   let mut is_supported = false;
@@ -102,10 +102,7 @@ pub fn is_bazel_supported_platform(target: &str) -> (bool, bool) {
     if expression.eval(|pred| {
       match pred {
         Predicate::Target(tp) => tp.matches(target_info),
-        Predicate::KeyValue {
-          key,
-          val,
-        } => (*key == "target") && (*val == target_info.triple),
+        Predicate::KeyValue { key, val } => (*key == "target") && (*val == target_info.triple),
         // For now there is no other kind of matching
         _ => false,
       }
@@ -186,7 +183,7 @@ pub fn find_bazel_workspace_root() -> Option<PathBuf> {
     };
   }
 
-  return None;
+  None
 }
 
 pub struct PlatformDetails {

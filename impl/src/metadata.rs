@@ -74,7 +74,7 @@ impl CargoMetadataFetcher {
     log::debug!("Cloning binary dependency: {}", &name);
     let mut cloner = cargo_clone::Cloner::new();
     cloner
-      .set_registry_url(url.to_string().trim_end_matches("/"))
+      .set_registry_url(url.to_string().trim_end_matches('/'))
       .set_out_dir(dir);
 
     cloner.clone(
@@ -211,7 +211,7 @@ pub fn fetch_crate_checksum(index_url: &str, name: &str, version: &str) -> Resul
     .iter()
     .enumerate()
     .find(|(_, ver)| ver.version() == version)
-    .ok_or(anyhow!(
+    .ok_or_else(|| anyhow!(
       "Failed to find version {} for crate {}",
       version,
       name
@@ -242,7 +242,7 @@ pub fn gather_binary_dep_info(
   let mut bin_crate_files: HashMap<String, CargoWorkspaceFiles> = HashMap::new();
   let mut bin_metadatas: Vec<Metadata> = Vec::new();
 
-  for (package, info) in (binary_deps).into_iter() {
+  for (package, info) in (binary_deps).iter() {
     // Install the package into a temp dir so we can run get it's metadata
     let (_src_dir, bin_workspace_files) = metadata_fetcher.fetch_crate_src(
       registry_url,

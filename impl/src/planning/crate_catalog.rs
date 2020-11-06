@@ -99,7 +99,7 @@ impl CrateCatalogEntry {
    * Not for use except during planning as path is local to run location.
    */
   pub fn expected_vendored_path(&self, workspace_path: &str) -> String {
-    let mut dir = find_bazel_workspace_root().unwrap_or(PathBuf::from("."));
+    let mut dir = find_bazel_workspace_root().unwrap_or_else(|| PathBuf::from("."));
 
     // Trim the absolute label identifier from the start of the workspace path
     dir.push(workspace_path.trim_start_matches('/'));
@@ -107,7 +107,7 @@ impl CrateCatalogEntry {
     dir.push(VENDOR_DIR);
     dir.push(&self.package_ident);
 
-    return dir.display().to_string();
+    dir.display().to_string()
   }
 
   /** Yields the expected location of the build file (relative to execution path). */

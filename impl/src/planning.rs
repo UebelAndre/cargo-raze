@@ -92,7 +92,7 @@ impl<'fetcher> BuildPlanner for BuildPlannerImpl<'fetcher> {
           Ok(path) => path.as_ref(),
           Err(err) => {
             return Err(anyhow!(err.to_string()));
-          },
+          }
         },
       )?,
       _ => BinaryDependencyInfo {
