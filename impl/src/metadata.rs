@@ -22,7 +22,7 @@ use std::{
 use anyhow::{anyhow, Result};
 
 use cargo_metadata::MetadataCommand;
-pub use cargo_metadata::{DependencyKind, Metadata, Node, Package, PackageId};
+pub use cargo_metadata::{Dependency, DepKindInfo, DependencyKind, Metadata, Node, Package, PackageId};
 
 use tempfile::TempDir;
 

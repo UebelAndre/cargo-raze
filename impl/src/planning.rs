@@ -24,7 +24,7 @@ use anyhow::{anyhow, Result};
 use tempfile::TempDir;
 
 use crate::{
-  context::{CrateContext, WorkspaceContext},
+  context::{CrateContext, DependencyAlias, WorkspaceContext},
   metadata::{gather_binary_dep_info, BinaryDependencyInfo, CargoWorkspaceFiles, MetadataFetcher},
   settings::{GenMode, RazeSettings},
   util::PlatformDetails,
@@ -36,8 +36,13 @@ use subplanners::WorkspaceSubplanner;
 /** A ready-to-be-rendered build, containing renderable context for each crate. */
 #[derive(Debug)]
 pub struct PlannedBuild {
+  /// The overall context for this workspace
   pub workspace_context: WorkspaceContext,
+  /// The crates to build for
   pub crate_contexts: Vec<CrateContext>,
+  /// Any aliases that are defined at the root level
+  pub workspace_aliases: Vec<DependencyAlias>,
+  /// Any crates that provide binary blobs
   pub binary_crate_files: HashMap<String, CargoWorkspaceFiles>,
 }
 
@@ -128,15 +133,20 @@ impl<'fetcher> BuildPlannerImpl<'fetcher> {
 #[cfg(test)]
 mod tests {
   use crate::{
+    context::*,
     metadata::{CargoMetadataFetcher, Metadata, MetadataFetcher},
     settings::tests as settings_testing,
     testing::*,
   };
 
-  use indoc::indoc;
+  use cargo_platform::Cfg;
+
   use super::*;
   use cargo_metadata::PackageId;
   use httpmock::MockServer;
+  use indoc::indoc;
+  use literal::{set, SetLiteral};
+  use pretty_assertions::assert_eq;
   use semver::{Version, VersionReq};
 
   // A wrapper around a MetadataFetcher which drops the
@@ -202,7 +212,6 @@ mod tests {
       )),
     );
 
-    println!("{:#?}", planned_build_res);
     assert!(planned_build_res.is_err());
   }
 
@@ -221,7 +230,6 @@ mod tests {
       )),
     );
 
-    println!("{:#?}", planned_build_res);
     assert!(planned_build_res.unwrap().crate_contexts.is_empty());
   }
 

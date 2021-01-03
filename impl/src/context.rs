@@ -15,6 +15,8 @@
 use crate::settings::CrateSettings;
 use serde::Serialize;
 use semver::Version;
+use std::collections::BTreeSet;
+use derivative::Derivative;
 
 /** A struct containing information about a crate's dependency that's buildable in Bazel
  *
@@ -29,9 +31,11 @@ pub struct BuildableDependency {
   pub is_proc_macro: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Eq, PartialOrd, Ord, Serialize, Derivative)]
+#[derivative(Hash, PartialEq)]
 pub struct DependencyAlias {
   pub target: String,
+  #[derivative(Hash="ignore", PartialEq="ignore")]
   pub alias: String,
 }
 
@@ -81,21 +85,21 @@ pub struct SourceDetails {
   pub git_data: Option<GitRepo>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CrateDependencyContext {
   pub dependencies: Vec<BuildableDependency>,
   pub proc_macro_dependencies: Vec<BuildableDependency>,
   pub build_dependencies: Vec<BuildableDependency>,
   pub build_proc_macro_dependencies: Vec<BuildableDependency>,
   pub dev_dependencies: Vec<BuildableDependency>,
-  pub aliased_dependencies: Vec<DependencyAlias>,
+  pub aliased_dependencies: BTreeSet<DependencyAlias>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CrateTargetedDepContext {
   pub target: String,
   pub deps: CrateDependencyContext,
-  pub conditions: Vec<String>,
+  pub platform_targets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

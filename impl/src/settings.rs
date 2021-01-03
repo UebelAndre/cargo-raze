@@ -15,7 +15,7 @@
 use crate::error::RazeError;
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs::File, io::Read, path::Path};
+use std::{collections::{HashMap, HashSet}, fs::File, io::Read, path::Path};
 
 pub type CrateSettingsPerVersion = HashMap<VersionReq, CrateSettings>;
 
@@ -72,7 +72,7 @@ pub struct RazeSettings {
    * Each item comes in the form of a "triple", such as "x86_64-unknown-linux-gnu"
    */
   #[serde(default)]
-  pub targets: Option<Vec<String>>,
+  pub targets: Option<HashSet<String>>,
 
   /**
    * A list of binary dependencies.
@@ -433,7 +433,7 @@ pub mod tests {
   pub fn dummy_raze_settings() -> RazeSettings {
     RazeSettings {
       workspace_path: "//cargo".to_owned(),
-      target: Some("x86_64-unknown-linux-gnu".to_owned()),
+      target: None,
       targets: None,
       crates: HashMap::new(),
       gen_workspace_prefix: "raze_test".to_owned(),
