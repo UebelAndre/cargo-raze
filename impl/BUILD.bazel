@@ -1,5 +1,7 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_rust//rust:rust.bzl", "rust_binary", "rust_library", "rust_test")
 load("//third_party/cargo:crates.bzl", "all_crate_deps")
+load("//tools:cargo.bzl", "cargo")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -81,4 +83,24 @@ rust_test(
     env = _TEST_ENV,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
+)
+
+cargo(
+    name = "cargo_raze_cargo",
+    args = [
+        "build",
+        "--manifest-path",
+        "./impl/Cargo.toml",
+    ],
+    data = glob(
+        ["**"],
+        exclude = ["target/**"],
+    ),
+)
+
+build_test(
+    name = "cargo_raze_cargo_build_test",
+    targets = [
+        ":cargo_raze_cargo",
+    ],
 )
