@@ -1,0 +1,20 @@
+[package]
+name = "crate-universe-resolver"
+version = "0.1.0"
+authors = [
+  "UebelAndre <github@uebelandre.com>",
+]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# [[bin]]
+# name = "crate-universe-resolver"
+# path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.38"
+cargo-raze = { path = "../impl" }
+serde_json = "1.0.64"
+sha2 = "0.9"
+structopt = "0.3.21"

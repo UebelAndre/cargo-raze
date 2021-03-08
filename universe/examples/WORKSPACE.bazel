@@ -1,0 +1,16 @@
+
+local_repository(
+    name = "cargo_raze",
+    path = "../..",
+)
+
+load("@cargo_raze//universe:defs.bzl", "crate_universe", "manifest")
+
+load("//example:manifest.bzl", "example_manifest")
+
+crate_universe(
+    name = "crate_universe",
+    manifest = manifest(
+
+    )
+)
